@@ -64,10 +64,6 @@
             <label for="startSec">開始位置（秒・任意）</label>
             <input id="startSec" type="number" min="0" placeholder="例）120" />
           </div>
-          <!--<div class="lock" style="margin-top:28px">
-            <input id="lockMode" type="checkbox" />
-            <label for="lockMode">閲覧必須モード（完了までアプリ内リンクをロック）</label>
-          </div>-->
         </div>
 
         <hr style="opacity:.2;border:none;border-top:1px solid rgba(255,255,255,.15)" />
@@ -97,7 +93,6 @@
           <label for="weeklyTime">時刻（曜日指定の毎週）</label>
           <input id="weeklyTime" type="time" />
           <div class="weekday" style="margin-top:8px">
-            <!-- 0:日,1:月,...6:土 -->
             <label><input type="checkbox" class="wday" value="1">月</label>
             <label><input type="checkbox" class="wday" value="2">火</label>
             <label><input type="checkbox" class="wday" value="3">水</label>
@@ -138,160 +133,22 @@
   </div>
 
   <script>
-    // ===== 共通ユーティリティ =====
-    function normalizeYouTubeUrl(raw, startSec) {
-      if (!raw) return null;
-      raw = raw.trim();
-      // 受け取るケース：完全URL、youtu.be 短縮、/shorts/、あるいは query に余計なものが付いてる場合など
+    // 通知クリックで YouTube を開く機能を追加
+    function notify(title, body, url) {
       try {
-        // もし raw にスペースや他テキストが混じっていたら後ろのURLを抽出（共有時にテキストの中にURLが混入することがある）
-        const urlMatch = raw.match(/https?:\/\/[^\s]+/);
-        if (urlMatch) raw = urlMatch[0];
-
-        let url = new URL(raw);
-        // youtu.be → watch?v=
-        if (url.hostname.includes("youtu.be")) {
-          const id = url.pathname.replace("/", "");
-          url = new URL("https://www.youtube.com/watch?v=" + id);
+        if (Notification.permission === "granted") {
+          const n = new Notification(title, { body, data: { url } });
+          n.onclick = (ev) => {
+            ev.preventDefault();
+            if (ev.target?.data?.url) window.open(ev.target.data.url, "_blank");
+          };
         }
-        // shorts → watch?v=
-        if (url.pathname.startsWith("/shorts/")) {
-          const parts = url.pathname.split("/").filter(Boolean);
-          const id = parts[1] || parts[0] || "";
-          url = new URL("https://www.youtube.com/watch?v=" + id);
-        }
-        // start 秒を一貫して start= に寄せる（t があれば取り込む）
-        const incomingT = url.searchParams.get("t");
-        const incomingStart = url.searchParams.get("start");
-        let start = Number(startSec || incomingStart || incomingT || 0);
-        start = Number.isFinite(start) && start > 0 ? Math.floor(start) : 0;
-        if (start > 0) {
-          url.searchParams.delete("t");
-          url.searchParams.set("start", String(start));
-        }
-        // 余計なパラメータは残しても問題ないが、不要なら下記で絞る（ここでは v と start のみを残す）
-        const id = url.searchParams.get("v");
-        const newUrl = new URL("https://www.youtube.com/watch?v=" + id);
-        if (start > 0) newUrl.searchParams.set("start", String(start));
-        return newUrl.toString();
-      } catch {
-        return null;
-      }
+      } catch(e) { console.warn(e); }
     }
 
-    async function requestNotificationPermission() {
-      if (!("Notification" in window)) { alert("このブラウザは通知に未対応です。"); return "unsupported"; }
-      if (Notification.permission === "granted") return "granted";
-      if (Notification.permission === "denied") return "denied";
-      try { return await Notification.requestPermission(); } catch { return "denied"; }
-    }
-
-    function notify(title, body) {
-      try { if (Notification.permission === "granted") new Notification(title, { body }); } catch(e){ console.warn(e); }
-    }
-
-    // ===== Wake Lock =====
-    let wakeLock = null;
-    async function toggleWakeLock() {
-      try {
-        if (!("wakeLock" in navigator)) { alert("Wake Lockに未対応のブラウザです。"); return; }
-        if (!wakeLock) {
-          wakeLock = await navigator.wakeLock.request("screen");
-          document.getElementById("stayAwake").textContent = "💤 画面消灯防止 解除";
-          wakeLock.addEventListener("release", () => {
-            document.getElementById("stayAwake").textContent = "💡 画面消灯防止";
-            wakeLock = null;
-          });
-        } else {
-          await wakeLock.release(); wakeLock = null;
-        }
-      } catch (e) { console.warn(e); alert("画面消灯防止の取得に失敗しました。"); }
-    }
-
-    // ===== スケジュール構造 =====
-    const statusEl = document.getElementById("status");
-    const listEl = document.getElementById("list");
-    const ytBox = document.getElementById("ytBox");
-    const stayAwakeBtn = document.getElementById("stayAwake");
-
-    let schedules = []; // 全スケジュール
-    let locked = false;
-    let mustWatch = false;
-    let targetUrlPlaying = null;
-
-    // ===== 保存／復元 =====
-    function saveAll(){ localStorage.setItem("ytSchedulesV2", JSON.stringify(schedules)); }
-    function loadAll(){
-      try { schedules = JSON.parse(localStorage.getItem("ytSchedulesV2")||"[]"); }
-      catch { schedules = []; }
-      if (!Array.isArray(schedules)) schedules = [];
-    }
-
-    // ===== 次回実行時刻の計算 =====
-    function toTodayEpoch(timeHHMM, baseDate = new Date()){
-      const [hh, mm] = timeHHMM.split(":").map(Number);
-      const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hh, mm, 0, 0);
-      return d.getTime();
-    }
-
-    function calcNextEpoch(s) {
-      const now = Date.now();
-      const nowD = new Date();
-
-      if (s.kind === "once") {
-        return (s.dt && s.dt > now) ? s.dt : null;
-      }
-
-      if (s.kind === "daily") {
-        let t = toTodayEpoch(s.time, nowD);
-        if (t <= now) {
-          const d = new Date(t); d.setDate(d.getDate()+1); t = d.getTime();
-        }
-        return t;
-      }
-
-      if (s.kind === "weekly") {
-        const set = new Set(s.weekdays||[]);
-        if (set.size === 0) return null;
-        for (let i=0;i<14;i++){
-          const d = new Date(now);
-          d.setDate(d.getDate()+i);
-          const day = d.getDay();
-          if (!set.has(day)) continue;
-          let t = toTodayEpoch(s.time, d);
-          if (i===0 && t<=now) continue;
-          return t;
-        }
-        return null;
-      }
-
-      if (s.kind === "dates") {
-        const consumed = s.state?.consumedDates || {};
-        const dates = (s.dates||[]).filter(d => !consumed[d]).sort();
-        for (const iso of dates) {
-          const [y,m,d] = iso.split("-").map(Number);
-          const t = new Date(y, m-1, d, ...s.time.split(":").map(Number), 0, 0).getTime();
-          if (t > now) return t;
-        }
-        return null; // もう残ってない
-      }
-      return null;
-    }
-
-    // ===== 予約追加 =====
-    function addSchedule(obj){
-      obj.id = crypto.randomUUID?.() || String(Date.now() + Math.random());
-      obj.nextEpoch = calcNextEpoch(obj);
-      if (obj.kind === "dates" && !obj.state) obj.state = { consumedDates: {} };
-      schedules.push(obj);
-      saveAll();
-      renderList();
-      tickStatus();
-    }
-
-    // ===== 実行（通知→遷移／埋め込み） =====
+    // 既存の fireSchedule 関数で notify 呼び出しを更新
     function fireSchedule(s){
-      notify("時間になりました ⏰", "指定のYouTubeへ移動します。");
+      notify("時間になりました ⏰", "指定のYouTubeへ移動します。", s.videoUrl);
 
       if (s.kind === "dates") {
         const fired = new Date();
