@@ -311,7 +311,7 @@
         loadYouTubePlayer(s.videoUrl);
         document.getElementById("ytBox").scrollIntoView({ behavior: "smooth", block: "center" });
       } else {
-        window.location.href = s.videoUrl;
+        window.open(s.videoUrl || "https://www.youtube.com", "_blank");
       }
     }
 
