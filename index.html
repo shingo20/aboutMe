@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>YouTube 指定時刻ジャンプ（新しいタブで自動再生）</title>
+  <title>YouTube 指定時刻ジャンプ（通知＋自動再生）</title>
   <meta name="theme-color" content="#111827" />
   <link rel="manifest" href="manifest.webmanifest" />
   <style>
@@ -33,6 +33,11 @@
   <button id="setTimer">開始する</button>
 
   <script>
+    // 通知許可リクエスト
+    if ("Notification" in window && Notification.permission !== "granted") {
+      Notification.requestPermission();
+    }
+
     document.getElementById("setTimer").addEventListener("click", () => {
       const url = document.getElementById("youtubeUrl").value.trim();
       const startTime = parseInt(document.getElementById("startTime").value, 10) || 0;
@@ -49,7 +54,6 @@
 
       target.setHours(hour, minute, 0, 0);
       if (target < now) {
-        // 指定時刻がすでに過ぎていたら翌日に設定
         target.setDate(target.getDate() + 1);
       }
 
@@ -60,7 +64,20 @@
         const playUrl = url.includes("?") 
           ? `${url}&t=${startTime}s`
           : `${url}?t=${startTime}s`;
-        window.open(playUrl, "_blank"); // 新しいタブで開く
+
+        // 通知を表示
+        if ("serviceWorker" in navigator && "showNotification" in ServiceWorkerRegistration.prototype) {
+          navigator.serviceWorker.ready.then((registration) => {
+            registration.showNotification("YouTube自動再生", {
+              body: "指定時刻になりました！新しいタブでYouTubeを再生します。",
+              icon: "icons/icon-192.png",
+              data: { url: playUrl }
+            });
+          });
+        }
+
+        // 新しいタブで自動再生
+        window.open(playUrl, "_blank");
       }, diff);
     });
 
